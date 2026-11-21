@@ -115,6 +115,21 @@ nav#tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;display:grid;grid-tem
 nav#tabs button{appearance:none;border:0;background:none;color:var(--muted);font-size:11px;font-weight:600;padding:8px 0 6px;display:flex;flex-direction:column;align-items:center;gap:2px;min-height:56px}
 nav#tabs button.on{color:var(--accent)}
 nav#tabs svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+/* photos */
+.ph{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:0;border:0;background:none;width:100%;margin-top:10px;border-radius:10px;overflow:hidden;cursor:zoom-in}
+.ph img{display:block;width:100%;aspect-ratio:3/2;object-fit:cover;background:var(--input)}
+.ph-note{font-size:12px;color:var(--muted);margin-top:4px}
+#viewer{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.92);color:#fff;overflow-y:auto;padding:calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));display:none}
+#viewer.on{display:block}
+#viewer .vw{max-width:560px;margin:0 auto}
+#viewer img{display:block;width:100%;border-radius:10px;margin:6px 0 14px}
+#viewer .cap{font-size:14px;color:#bbb}
+#viewer h3{font-size:18px;margin:0 0 6px}
+/* timer */
+.tm{display:flex;align-items:center;gap:8px}
+.tm-v{font-variant-numeric:tabular-nums;font-weight:700;font-size:18px}
+.btn.sm{min-height:38px;padding:8px 12px;font-size:15px}
+.dur{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
 #toast{position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:12px;font-size:14px;max-width:calc(100% - 32px);opacity:0;pointer-events:none;transition:opacity .2s;z-index:20;text-align:center}
 #toast.on{opacity:1}
 </style>
@@ -129,11 +144,12 @@ nav#tabs svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1
 </nav>
 <div id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
+<div id="viewer" role="dialog" aria-modal="true" data-act="close-viewer"></div>
 
 <script>
 'use strict';
 /* ====================== ПРОГРАММА (менять здесь при изменении program.md) ====================== */
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const PROGRAM_START = '2026-11-09'; // понедельник первой недели занятий, для номера недели
 const SCHEDULE = {1:'UA', 2:'LA', 4:'UB', 5:'LB'}; // день недели (пн=1) -> тренировка
 
@@ -181,6 +197,18 @@ const DAYS = {
   ]},
 };
 const DB_MAX = 20; // около 20 кг на руку
+// Фото: img/<id>-0.jpg (начало) и img/<id>-1.jpg (конец), из free-exercise-db (Unlicense).
+const PHOTO_NOTE = {
+  pullover:'На фото на скамье, у вас на полу.',
+  goblet:'На фото с гирей, у вас гантель.',
+  sl_rdl:'На фото с гирей, у вас гантель.',
+  glute_bridge:'На фото без веса, у вас гантель на бёдрах.',
+  calf1:'На фото на двух ногах, у вас на одной.',
+  band_pulldown:'На фото тренажёр, у вас резинка в дверной петле.',
+  face_pull:'На фото тренажёр, у вас резинка в дверной петле.',
+  band_pushdown:'На фото тренажёр, у вас резинка в дверной петле.',
+  core:'На фото планка.',
+};
 /* ============================================================================================ */
 
 const EX = {};
@@ -211,7 +239,7 @@ const $ = sel => document.querySelector(sel);
 
 /* ---------- хранение ---------- */
 const KEY = 'hw.v1';
-const blank = () => ({v:1, workouts:[], weights:[], lastExport:null});
+const blank = () => ({v:1, workouts:[], weights:[], lastExport:null, settings:{photos:true}});
 function load() {
   try { const raw = localStorage.getItem(KEY); if (raw) return Object.assign(blank(), JSON.parse(raw)); } catch (e) {}
   return blank();
@@ -315,8 +343,8 @@ function warn48(day, date, exclId) {
 }
 
 /* ---------- тренировки ---------- */
-function newWorkout(day, date) {
-  const w = {id:uid(), date, day, status:'draft', created:Date.now(), updated:Date.now(), ex:[]};
+function newWorkout(day, date, withTimer) {
+  const w = {id:uid(), date, day, status:'draft', created:Date.now(), updated:Date.now(), startedAt:withTimer ? Date.now() : null, endedAt:null, durMin:null, ex:[]};
   w.ex = DAYS[day].ex.map(d => {
     const n = targetSets(d, date);
     const sets = Array.from({length:n}, () => ({w:null, r:null, rir:null}));
@@ -330,6 +358,16 @@ function newWorkout(day, date) {
 const getW = id => S.workouts.find(w => w.id === id);
 const touch = w => { w.updated = Date.now(); saveSoon(); };
 const countSets = w => w.ex.reduce((a, e) => a + e.sets.filter(isFilled).length, 0);
+
+/* ---------- таймер тренировки ---------- */
+const isRunning = w => !!(w && w.status === 'draft' && w.startedAt && !w.endedAt && w.durMin == null);
+const durMs = w => w.durMin != null ? w.durMin * 60000 : w.startedAt ? (w.endedAt || Date.now()) - w.startedAt : null;
+const fmtClock = ms => { const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`; };
+const fmtMin = ms => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} ч ${m % 60} мин` : `${m} мин`; };
+const fmtTime = ts => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+setInterval(() => {
+  document.querySelectorAll('[data-timer]').forEach(el => { const w = getW(el.dataset.timer); if (w && durMs(w) != null) el.textContent = fmtClock(durMs(w)); });
+}, 1000);
 
 /* ---------- состояние интерфейса ---------- */
 let view = 'home', tab = 'home', curId = null;
@@ -367,7 +405,7 @@ function vHome() {
     ${del ? `<div class="hint warn">${del}</div>` : ''}</div>`;
 
   const drafts = S.workouts.filter(w => w.status === 'draft');
-  for (const w of drafts) h += `<div class="card"><div class="between"><div><h2>Незавершённая тренировка</h2><div class="sub">${DAYS[w.day].name}, ${fmtDateW(w.date)} · ${countSets(w)} ${plural(countSets(w),'подход','подхода','подходов')}</div></div></div>
+  for (const w of drafts) h += `<div class="card"><div class="between"><div><h2>${isRunning(w) ? 'Идёт тренировка' : 'Незавершённая тренировка'}</h2><div class="sub">${DAYS[w.day].name}, ${fmtDateW(w.date)} · ${countSets(w)} ${plural(countSets(w),'подход','подхода','подходов')}</div></div>${isRunning(w) ? `<span class="tm-v" data-timer="${w.id}">${fmtClock(durMs(w))}</span>` : ''}</div>
     <button class="btn primary block mt" data-act="open" data-id="${w.id}">Продолжить</button></div>`;
 
   const todays = S.workouts.filter(w => w.date === t && w.status === 'done');
@@ -418,9 +456,17 @@ function vHome() {
 /* ---------- экран тренировки ---------- */
 function vWorkout() {
   const w = getW(curId), d = DAYS[w.day], p = phaseOf(w.date);
+  let tm = '';
+  if (isRunning(w)) tm = `<div class="tm"><span class="tm-v" data-timer="${w.id}">${fmtClock(durMs(w))}</span><button class="btn primary sm" data-act="finish" data-ask="1">Стоп</button></div>`;
+  else if (w.status === 'draft' && !w.startedAt && w.durMin == null && w.date === today()) tm = `<button class="btn primary sm" data-act="timer-start">▶ Старт</button>`;
   let h = `<div class="wk-head"><button class="btn ghost" data-act="back">‹ Назад</button>
-    <div class="ttl"><b>${d.name}</b><input type="date" class="wk-date" data-f="wdate" value="${w.date}" max="${today()}"></div></div>
+    <div class="ttl"><b>${d.name}</b><input type="date" class="wk-date" data-f="wdate" value="${w.date}" max="${today()}"></div>${tm}</div>
     <div class="muted" style="margin-bottom:10px">${p.name}: ${p.sub} · запас ${p.rir}</div>`;
+  if (!isRunning(w) && (w.status === 'done' || w.date !== today() || w.startedAt || w.durMin != null)) {
+    const ms = durMs(w);
+    h += `<div class="dur sub"><span>${ms != null ? `Длительность: ${fmtMin(ms)}${w.startedAt ? `, начало ${fmtTime(w.startedAt)}` : ''}` : 'Длительность не записана'}</span>
+      <button class="btn ghost sm" data-act="dur-edit">${ms != null ? 'изменить' : 'указать'}</button></div>`;
+  }
   h += warn48(w.day, w.date, w.id);
   h += w.ex.map((e, i) => exCard(w, e, i)).join('');
   h += `<button class="btn primary block" data-act="finish">${w.status === 'done' ? 'Сохранить' : 'Завершить тренировку'}</button>
@@ -435,6 +481,8 @@ function exCard(w, e, i) {
   let h = `<section class="card ex ${e.pain > 3 ? 'flag' : ''}" data-ex="${i}">
     <div class="ex-top"><div><h3>${esc(d.name)}</h3><div class="sub">${range}${d.note ? ' · ' + esc(d.note) : ''}</div></div>
     <a class="vid" href="https://www.youtube.com/results?search_query=${encodeURIComponent(d.q)}" target="_blank" rel="noopener">видео ↗</a></div>
+    ${S.settings.photos !== false ? `<button class="ph" data-act="photo" data-id="${d.id}" aria-label="Увеличить фото"><img src="img/${d.id}-0.jpg" alt="Начало движения" loading="lazy"><img src="img/${d.id}-1.jpg" alt="Конец движения" loading="lazy"></button>
+      ${PHOTO_NOTE[d.id] ? `<div class="ph-note">${PHOTO_NOTE[d.id]}</div>` : ''}` : ''}
     ${last ? `<div class="last">Прошлый раз, ${fmtDateW(last.date)}: ${setsStr(last.sets)}</div>` : ''}
     ${hn ? `<div class="hint ${hn.cls}">${hn.text}</div>` : ''}
     <div class="sets-head"><span>#</span><span>${esc(d.unit)}</span><span>повторы</span><span>запас</span><span></span></div>`;
@@ -483,7 +531,7 @@ function vLog() {
   h += ws.map(w => {
     const nEx = w.ex.filter(e => e.sets.some(isFilled)).length, nS = countSets(w);
     return `<button class="list-item" data-act="open" data-id="${w.id}"><div class="between"><b>${DAYS[w.day].name}${w.status === 'draft' ? '<span class="badge">не завершена</span>' : ''}</b><span class="muted">${fmtDateW(w.date)}</span></div>
-      <div class="sub">${nEx} ${plural(nEx,'упражнение','упражнения','упражнений')}, ${nS} ${plural(nS,'подход','подхода','подходов')}</div></button>`;
+      <div class="sub">${nEx} ${plural(nEx,'упражнение','упражнения','упражнений')}, ${nS} ${plural(nS,'подход','подхода','подходов')}${isRunning(w) ? ' · идёт' : durMs(w) != null ? ' · ' + fmtMin(durMs(w)) : ''}</div></button>`;
   }).join('');
   return h;
 }
@@ -628,6 +676,9 @@ function vData() {
   <div class="card"><h2>Календарь</h2><table><tr><th>Период</th><th>Этап</th></tr>
     ${PHASES.map(p => `<tr><td>${fmtDate(p.from)}${p.to ? '-' + fmtDate(p.to) : ' и далее'}</td><td>${p.name}: ${p.sub}</td></tr>`).join('')}</table>
     <div class="sub mt">Неделя: пн Верх A, вт Низ A, чт Верх B, пт Низ B. Среда и выходные отдыхаем.</div></div>
+  <div class="card"><h2>Фото упражнений</h2>
+    <div class="seg">${[[true,'Показывать'],[false,'Скрыть']].map(([v, l]) => `<button data-act="photos" data-v="${v}" class="${(S.settings.photos !== false) === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="muted mt">Фото: открытая база free-exercise-db (github.com/yuhonas/free-exercise-db), общественное достояние.</div></div>
   <div class="muted" style="text-align:center">Версия ${APP_VERSION}</div>`;
   return h;
 }
@@ -644,8 +695,11 @@ function claudeText(days) {
   L.push('');
   const list = [...S.workouts].filter(w => w.date >= from).sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (a.created||0) - (b.created||0));
   if (!list.length) L.push('Тренировок за период нет.');
+  const durs = list.filter(w => w.status === 'done' && durMs(w) != null).map(durMs);
+  if (durs.length) { L.push(`Средняя длительность: ${fmtMin(durs.reduce((a, b) => a + b, 0) / durs.length)} (по ${durs.length} ${plural(durs.length,'тренировке','тренировкам','тренировкам')}).`); L.push(''); }
   for (const w of list) {
-    L.push(`${fmtDateW(w.date)}, ${DAYS[w.day].name}${w.status === 'draft' ? ' (не завершена)' : ''}`);
+    const ms = durMs(w);
+    L.push(`${fmtDateW(w.date)}, ${DAYS[w.day].name}${w.status === 'draft' ? ' (не завершена)' : ''}${ms != null && !isRunning(w) ? `, длительность ${fmtMin(ms)}` : ''}${w.startedAt ? `, начало ${fmtTime(w.startedAt)}` : ''}`);
     for (const e of w.ex) {
       const fs = e.sets.filter(isFilled);
       if (!fs.length) { L.push(`- ${EX[e.id].name}: не выполнялось`); continue; }
@@ -712,12 +766,35 @@ document.addEventListener('click', async e => {
       const date = act === 'start' ? today() : ($('#logDate').value || today());
       const day = t.dataset.day;
       const existing = S.workouts.find(x => x.date === date && x.day === day);
-      if (existing) { go('workout', {id:existing.id}); break; }
+      if (existing) {
+        if (act === 'start' && existing.status === 'draft' && !existing.startedAt && existing.durMin == null) { existing.startedAt = Date.now(); touch(existing); }
+        go('workout', {id:existing.id}); break;
+      }
       const r = recentSameGroup(day, date, null);
       if (r && !confirm(`${GROUP_NAME[DAYS[day].group]} уже был ${r.d === 0 ? 'сегодня' : 'вчера'}. Мышцам нужно 48 часов. Всё равно начать?`)) break;
-      go('workout', {id:newWorkout(day, date).id});
+      go('workout', {id:newWorkout(day, date, act === 'start').id});
+      if (act === 'start') toast('Таймер запущен');
       break;
     }
+    case 'timer-start': w.startedAt = Date.now(); touch(w); render(); toast('Таймер запущен'); break;
+    case 'dur-edit': {
+      const cur = durMs(w);
+      const v = prompt('Сколько минут длилась тренировка?', cur != null ? String(Math.round(cur / 60000)) : '60');
+      if (v == null) break;
+      const m = parseNum(v);
+      if (m == null || m <= 0 || m > 600) { toast('Введите число минут, например 55'); break; }
+      w.durMin = Math.round(m); touch(w); render(); break;
+    }
+    case 'photo': {
+      const d = EX[t.dataset.id], vw = $('#viewer');
+      vw.innerHTML = `<div class="vw"><h3>${esc(d.name)}</h3>${PHOTO_NOTE[d.id] ? `<div class="cap">${PHOTO_NOTE[d.id]}</div>` : ''}
+        <div class="cap" style="margin-top:12px">Начало</div><img src="img/${d.id}-0.jpg" alt="Начало движения">
+        <div class="cap">Конец</div><img src="img/${d.id}-1.jpg" alt="Конец движения">
+        <div class="cap" style="text-align:center">Нажмите, чтобы закрыть</div></div>`;
+      vw.classList.add('on'); vw.scrollTop = 0; break;
+    }
+    case 'close-viewer': $('#viewer').classList.remove('on'); break;
+    case 'photos': S.settings.photos = t.dataset.v === 'true'; save(); render(); break;
     case 'back': save(); go(tab); break;
     case 'same': {
       const j = +t.dataset.s, prev = w.ex[ei].sets[j-1];
@@ -738,8 +815,19 @@ document.addEventListener('click', async e => {
     case 'note': w.ex[ei].showNote = true; rerenderCard(ei); { const ta = document.querySelector(`[data-ex="${ei}"] textarea`); if (ta) ta.focus(); } break;
     case 'finish': {
       const n = countSets(w);
+      if (t.dataset.ask && !confirm('Остановить таймер и завершить тренировку?')) break;
       if (!n && !confirm('Ни одного подхода не записано. Всё равно завершить?')) break;
+      if (isRunning(w)) {
+        w.endedAt = Date.now();
+        const ms = w.endedAt - w.startedAt;
+        if (ms > 3 * 3600e3) {
+          const v = prompt(`Таймер шёл ${fmtMin(ms)}, возможно его забыли остановить. Сколько минут длилась тренировка?`, '60');
+          const m = parseNum(v);
+          if (m != null && m > 0 && m <= 600) w.durMin = Math.round(m);
+        }
+      }
       w.status = 'done'; w.updated = Date.now(); save();
+      if (w.startedAt || w.durMin != null) { toast(`Сохранено: ${n} ${plural(n,'подход','подхода','подходов')}, ${fmtMin(durMs(w))}`); go(tab); break; }
       toast(`Сохранено: ${n} ${plural(n,'подход','подхода','подходов')}`);
       go(tab); break;
     }

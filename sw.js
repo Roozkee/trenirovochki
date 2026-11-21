@@ -1,6 +1,9 @@
 // Офлайн-кеш. При изменении файлов приложения поднимайте номер версии.
-const CACHE = 'hw-v1';
-const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
+const CACHE = 'hw-v2';
+const IMG_IDS = ['floor_press','row1','seated_press','lateral','curl','french','bulgarian','rdl','glute_bridge','calf1','core',
+  'pushup','row2','arnold','band_pulldown','face_pull','hammer','band_pushdown','pullover','goblet','reverse_lunge','sl_rdl','leg_curl','calf'];
+const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png',
+  ...IMG_IDS.flatMap(id => [`./img/${id}-0.jpg`, `./img/${id}-1.jpg`])];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
